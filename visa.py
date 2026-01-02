@@ -1,42 +1,65 @@
-import requests
-from bs4 import BeautifulSoup
-from plyer import notification
-import urllib.request
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
 import time
- 
-# Function to send notifications
+from plyer import notification
+
+# --- Notification Helper ---
 def send_notification(title, message):
     notification.notify(
         title=title,
         message=message,
-        timeout=10  # Notification will disappear after 10 seconds
+        timeout=10
     )
- 
-# Function to parse HTML and check for changes
-def parse_html(url, last_content):
+
+# --- Core Logic ---
+def check_h1b_slots():
+    options = uc.ChromeOptions()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    driver = uc.Chrome(options=options)
+
     try:
-        # Send HTTP request and get the webpage content
-        session = requests.Session()
-        response = session.get(url, headers={'User-Agent': 'Mozilla/6.0'})
-        soup = BeautifulSoup(response.text, 'html.parser')
+        driver.get("https://visaslots.info/")
+        print("Waiting for Cloudflare check...")
+        time.sleep(8)  # wait for Cloudflare protection
 
-        all_dates = [row.find('td', {"class":"earliest"}).get_text().strip() for row in soup.find('table').tbody.find_all('tr') if 'VAC' in row.find('a').get_text() and 'N/A' not in row.find('td', {"class":"earliest"}).get_text().strip()]
-        print(all_dates)
-        if all_dates:
-            send_notification("Appointments Available", f"{all_dates}")
-  
-    except Exception as e:
-        print(f"Error: {e}")
-        return last_content
- 
-# Main loop to run the script continuously
+        # Get all rows in the table
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+
+        h1b_consular = []
+
+        for row in rows:
+            cells = [cell.text.strip() for cell in row.find_elements(By.TAG_NAME, "td")]
+            if len(cells) >= 5:
+                location, visa_type, _, date, count = cells[:5]
+                if (("H-1B" in visa_type and "CONSULAR" in location) or ("H-4" in visa_type and "VAC" in location)) and date != "N/A":
+                    h1b_consular.append({
+                        "location": location,
+                        "date": date,
+                        "count": count
+                    })
+
+        return h1b_consular
+
+    finally:
+        driver.quit()
+
+# --- Continuous Monitoring ---
 def main():
+    print("Starting H1B slot monitor...")
 
-    url = "https://visaslots.info/"
     while True:
-        print("checking dates")
-        parse_html(url, "")
-        time.sleep(30)
- 
+        slots = check_h1b_slots()
+        print(f"Checked {time.strftime('%H:%M:%S')} → Found {len(slots)} available slots")
+
+        for slot in slots:
+            slot_id = f"{slot['location']}|{slot['date']}"
+            if slot_id:
+                message = f"{slot['location']} — {slot['date']} ({slot['count']} slots)"
+                print("🟢 New slot:", message)
+                send_notification("H-1B Slot Available!", message)
+
+        # Query every 60 seconds (you can lower to e.g. 30)
+        time.sleep(60)
+
 if __name__ == "__main__":
     main()
